@@ -1,0 +1,7 @@
+{
+  "region": "eu-west-3",
+  "notesDirectory": "/path/to/your/notes/",
+  "s3": {
+    "bucketName": "your-unique-bucket-name"
+  }
+}

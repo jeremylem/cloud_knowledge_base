@@ -1,0 +1,446 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Notes Assistant with S3 Vectors for Bedrock Knowledge Base
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket for notes storage
+  KnowledgeBaseName:
+    Type: String
+    Default: notes-knowledge-base
+    Description: Name for the knowledge base
+  FoundationModelId:
+    Type: String
+    Default: eu.amazon.nova-lite-v1:0
+    Description: Foundation model ID for the agent (use inference profile for EU regions)
+
+Resources:
+  # S3 Bucket for Notes (source documents)
+  NotesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: notes-assistant
+        - Key: Environment
+          Value: dev
+
+  # S3 Vectors Bucket for embeddings storage
+  VectorBucket:
+    Type: AWS::S3Vectors::VectorBucket
+    Properties:
+      VectorBucketName: !Sub "${BucketName}-vectors"
+
+  # S3 Vectors Index
+  VectorIndex:
+    Type: AWS::S3Vectors::Index
+    Properties:
+      VectorBucketArn: !GetAtt VectorBucket.VectorBucketArn
+      IndexName: !Sub "${KnowledgeBaseName}-index"
+      DataType: float32
+      Dimension: 1024
+      DistanceMetric: cosine
+      MetadataConfiguration:
+        NonFilterableMetadataKeys:
+          - AMAZON_BEDROCK_TEXT
+          - AMAZON_BEDROCK_METADATA
+    DependsOn: VectorBucket
+
+  # IAM Role for Bedrock Knowledge Base
+  BedrockKnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${KnowledgeBaseName}-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3NotesAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt NotesBucket.Arn
+                  - !Sub "${NotesBucket.Arn}/*"
+        - PolicyName: S3VectorsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3vectors:GetVectorBucket
+                  - s3vectors:ListIndexes
+                Resource:
+                  - !GetAtt VectorBucket.VectorBucketArn
+              - Effect: Allow
+                Action:
+                  - s3vectors:GetIndex
+                  - s3vectors:PutVectors
+                  - s3vectors:GetVectors
+                  - s3vectors:DeleteVectors
+                  - s3vectors:QueryVectors
+                  - s3vectors:ListVectors
+                Resource:
+                  - !GetAtt VectorIndex.IndexArn
+        - PolicyName: BedrockModelAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+
+  # Bedrock Knowledge Base with S3 Vectors
+  KnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Ref KnowledgeBaseName
+      Description: Knowledge base for personal notes using S3 Vectors
+      RoleArn: !GetAtt BedrockKnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+      StorageConfiguration:
+        Type: S3_VECTORS
+        S3VectorsConfiguration:
+          IndexArn: !GetAtt VectorIndex.IndexArn
+    DependsOn:
+      - VectorIndex
+      - BedrockKnowledgeBaseRole
+
+  # Data Source pointing to notes S3 bucket
+  DataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref KnowledgeBase
+      Name: notes-s3-source
+      Description: S3 data source for notes
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt NotesBucket.Arn
+          InclusionPrefixes:
+            - "notes/"
+      VectorIngestionConfiguration:
+        ChunkingConfiguration:
+          ChunkingStrategy: FIXED_SIZE
+          FixedSizeChunkingConfiguration:
+            MaxTokens: 300
+            OverlapPercentage: 10
+    DependsOn: KnowledgeBase
+
+  # IAM Role for Ingestion Trigger Lambda
+  IngestionTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockIngestionAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:StartIngestionJob
+                Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+
+  # Lambda to trigger ingestion on deployment
+  IngestionTriggerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${KnowledgeBaseName}-ingestion-trigger"
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt IngestionTriggerRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      client = boto3.client('bedrock-agent')
+                      client.start_ingestion_job(
+                          knowledgeBaseId=event['ResourceProperties']['KnowledgeBaseId'],
+                          dataSourceId=event['ResourceProperties']['DataSourceId']
+                      )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Custom Resource to auto-trigger ingestion
+  IngestionTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt IngestionTriggerLambda.Arn
+      KnowledgeBaseId: !Ref KnowledgeBase
+      DataSourceId: !GetAtt DataSource.DataSourceId
+    DependsOn: DataSource
+
+  # Evaluator Lambda - scores response quality (SAM)
+  EvaluatorLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${KnowledgeBaseName}-evaluator"
+      Runtime: python3.13
+      Handler: evaluator.handler
+      CodeUri: ../lambda/
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          MODEL_ID: !Ref FoundationModelId
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:Converse
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${FoundationModelId}"
+                - !Sub "arn:aws:bedrock:*::foundation-model/*"
+
+  # Lambda permission for Bedrock Agent to invoke Evaluator
+  EvaluatorLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EvaluatorLambda
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
+
+  # IAM Role for Bedrock Agent
+  BedrockAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${KnowledgeBaseName}-agent-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: BedrockAgentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${FoundationModelId}"
+                  - !Sub "arn:aws:bedrock:*::foundation-model/*"
+              - Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt EvaluatorLambda.Arn
+
+  # Bedrock Agent
+  NotesAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: notes-assistant-agent
+      AgentResourceRoleArn: !GetAtt BedrockAgentRole.Arn
+      FoundationModel: !Ref FoundationModelId
+      PromptOverrideConfiguration:
+        PromptConfigurations:
+          - PromptType: PRE_PROCESSING
+            PromptState: DISABLED
+            PromptCreationMode: OVERRIDDEN
+            BasePromptTemplate: |
+              {
+                "system": "Classify all inputs as Category D (can be answered by the agent).",
+                "messages": [{"role": "user", "content": [{"text": "Input: $question$"}]}]
+              }
+            InferenceConfiguration:
+              Temperature: 0
+              MaximumLength: 10
+      Description: Agent that retrieves notes from a personal knowledge base
+      Instruction: |
+        You are a helpful assistant that answers questions using a personal notes knowledge base.
+
+        For each query:
+        1. Search the knowledge base for relevant information
+        2. Draft a response based on what you find
+        3. Call evaluate_response with your draft and the original query
+        4. If score < 7, revise based on feedback and evaluate again
+        5. Maximum 3 evaluation iterations
+        6. Return final response when score >= 7 or max iterations reached
+        7. If nothing relevant is found, say "I couldn't find information about this in my notes."
+
+        Keep answers concise. Cite the source file when possible.
+      IdleSessionTTLInSeconds: 600
+      AutoPrepare: true
+      KnowledgeBases:
+        - KnowledgeBaseId: !Ref KnowledgeBase
+          Description: Personal notes knowledge base
+          KnowledgeBaseState: ENABLED
+      ActionGroups:
+        - ActionGroupName: ResponseEvaluation
+          ActionGroupState: ENABLED
+          Description: Evaluate draft responses for quality
+          ActionGroupExecutor:
+            Lambda: !GetAtt EvaluatorLambda.Arn
+          FunctionSchema:
+            Functions:
+              - Name: evaluate_response
+                Description: Evaluates a draft response for quality, returning a score (1-10) and feedback
+                Parameters:
+                  original_query:
+                    Type: string
+                    Description: The original user query
+                    Required: true
+                  draft_response:
+                    Type: string
+                    Description: The draft response to evaluate
+                    Required: true
+    DependsOn:
+      - EvaluatorLambda
+      - EvaluatorLambdaPermission
+      - KnowledgeBase
+
+  # Agent Alias for deployment
+  NotesAgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentId: !GetAtt NotesAgent.AgentId
+      AgentAliasName: live
+      Description: Production alias for notes assistant agent
+    DependsOn: NotesAgent
+
+  # API Lambda - HTTP endpoint to invoke the agent
+  ApiLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${KnowledgeBaseName}-api"
+      Runtime: python3.13
+      Handler: api.handler
+      CodeUri: ../lambda/
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          AGENT_ID: !GetAtt NotesAgent.AgentId
+          AGENT_ALIAS_ID: !GetAtt NotesAgentAlias.AgentAliasId
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeAgent
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${NotesAgent.AgentId}/*"
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - POST
+          AllowHeaders:
+            - Content-Type
+    DependsOn: NotesAgentAlias
+
+Outputs:
+  NotesBucketName:
+    Description: Name of the S3 bucket for notes
+    Value: !Ref NotesBucket
+    Export:
+      Name: NotesBucketName
+
+  VectorBucketArn:
+    Description: ARN of the S3 Vectors bucket
+    Value: !GetAtt VectorBucket.VectorBucketArn
+    Export:
+      Name: VectorBucketArn
+
+  VectorIndexArn:
+    Description: ARN of the S3 Vectors index
+    Value: !GetAtt VectorIndex.IndexArn
+    Export:
+      Name: VectorIndexArn
+
+  KnowledgeBaseId:
+    Description: ID of the Bedrock Knowledge Base
+    Value: !Ref KnowledgeBase
+    Export:
+      Name: NotesKnowledgeBaseId
+
+  KnowledgeBaseArn:
+    Description: ARN of the Bedrock Knowledge Base
+    Value: !GetAtt KnowledgeBase.KnowledgeBaseArn
+    Export:
+      Name: NotesKnowledgeBaseArn
+
+  DataSourceId:
+    Description: ID of the Data Source
+    Value: !GetAtt DataSource.DataSourceId
+    Export:
+      Name: NotesDataSourceId
+
+  EvaluatorLambdaArn:
+    Description: ARN of the Evaluator Lambda
+    Value: !GetAtt EvaluatorLambda.Arn
+    Export:
+      Name: NotesEvaluatorLambdaArn
+
+  AgentId:
+    Description: ID of the Bedrock Agent
+    Value: !GetAtt NotesAgent.AgentId
+    Export:
+      Name: NotesAgentId
+
+  AgentAliasId:
+    Description: Alias ID of the Bedrock Agent
+    Value: !GetAtt NotesAgentAlias.AgentAliasId
+    Export:
+      Name: NotesAgentAliasId
+
+  ApiEndpoint:
+    Description: HTTP endpoint for the Notes Assistant API
+    Value: !GetAtt ApiLambdaUrl.FunctionUrl
+    Export:
+      Name: NotesApiEndpoint

@@ -1,0 +1,29 @@
+# SAM build artifacts
+.aws-sam/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Local config (contains bucket name)
+config.json
+
+# Logs
+*.log
+
+# Claude Code
+.claude/
+
+# Test artifacts
+response.json

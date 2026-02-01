@@ -1,6 +1,6 @@
-# Notes Assistant with Bedrock AgentCore
+# Notes Assistant with Bedrock Multi-Agent
 
-A RAG chatbot for personal notes using S3 Vectors and Bedrock AgentCore. Features self-critique evaluation loop and multi-turn conversations. Built as a learning exercise after re:Invent 2025.
+A RAG chatbot for personal notes using S3 Vectors and Bedrock Agents. Features true multi-agent collaboration with critique-driven feedback loop and multi-turn conversations. Built as a learning exercise after re:Invent 2025.
 
 ## Why I Built This
 
@@ -8,12 +8,42 @@ I already have [virtualme](https://github.com/ox00004a/virtualme) running in pro
 
 But re:Invent 2025 announced two things that caught my attention:
 
-- **Amazon S3 Vectors** (December 2025). Native vector storage with similarity search. No more client-side cosine calculations.
-- **Amazon Bedrock AgentCore** (December 2025). Managed agent infrastructure with built-in tool orchestration.
+- **Amazon S3 Vectors** (December 2025). Native vector storage with server-side similarity search. Supports cosine, euclidean, and dot product metrics. Up to 10,000 dimensions per vector. Metadata filtering built-in. No more client-side cosine calculations or DynamoDB scan-and-compute patterns.
 
-I wanted to understand how these compare to my DynamoDB approach. What do I gain? What do I lose?
+- **Amazon Bedrock AgentCore** (December 2025). Managed agent infrastructure with tool orchestration. Agents get knowledge base access, action groups, and session memory. Multi-agent setups possible: agents can invoke other agents, share context, or work in parallel. Built-in trace for debugging retrieval and reasoning steps.
+
+I wanted to understand how these compare to my DynamoDB approach.
 
 This project is that exploration.
+
+---
+
+## Multi-Agent Architecture
+
+True multi-agent collaboration with specialized roles:
+
+- **Research Agent**: Searches knowledge base, extracts facts
+- **Critique Agent**: Evaluates quality, provides feedback (1-10 scoring)
+- **Formatter Agent**: Creates natural user responses
+
+### Orchestration Pattern
+
+Sequential agent handoff with feedback loop:
+
+```
+Query → Research Agent → Critique Agent → Score Check
+                                      ↓
+                              Score ≥ 7? → Formatter Agent → Response
+                                      ↓
+                              Score < 7? → Feedback to Research (max 3x)
+```
+
+### Session Management
+
+- Shared session IDs across all agent calls
+- Each query gets unique session ID
+- All 3 agents share conversation memory
+- Natural multi-turn conversations
 
 ---
 
@@ -52,26 +82,37 @@ python client.py "What is DynamoDB?"
      |
      | HTTPS + SigV4 signing
      v
-+------------------+     +------------------+
-|  Lambda          | --> |  Bedrock Agent   |
-|  Function URL    |     |  (Nova Lite v1)  |
-+------------------+     +--------+---------+
-                                  |
-                    +-------------+-------------+
-                    |                           |
-                    v                           v
-           +----------------+          +----------------+
-           |  Knowledge     |          |  Evaluator     |
-           |  Base Search   |          |  Lambda        |
-           +----------------+          +----------------+
-                                              |
-                                              v
-                                       score < 7?
-                                       revise (max 3x)
-                                              |
-                                              v
-                                        Final Answer
++------------------+
+|  API Lambda      |
+|  Function URL    |
++--------+---------+
+         |
+         v
++------------------+
+|  Orchestrator    |  manages agent workflow
+|  Lambda          |  extracts citations from trace
++--------+---------+
+         |
+         +---> Research Agent ---> Critique Agent
+         |           ^                   |
+         |           |     score < 7     |
+         |           +-------------------+
+         |                   |
+         |            score >= 7
+         |                   v
+         +---> Formatter Agent ---> Response with Sources
 ```
+
+### Orchestrator Lambda
+
+The orchestrator is a Python Lambda (`orchestrator.handler`) that coordinates the multi-agent workflow. It receives the query, manages the critique loop, and assembles the final response.
+
+Key implementation details:
+- Calls `bedrock.invoke_agent()` with `enableTrace=True` to capture retrieval metadata
+- Parses `knowledgeBaseLookupOutput.retrievedReferences` from trace to extract real S3 URIs
+- Extracts filenames from URIs and appends them as sources (agents hallucinate filenames, so this is done server-side)
+- Shares same `session_id` across all agent calls for conversation continuity
+- Returns structured response with `iterations`, `final_score`, and `sources` for observability
 
 ---
 
@@ -79,16 +120,16 @@ python client.py "What is DynamoDB?"
 
 ### 1. AWS SAM
 
-I've used Terraform and CDK before. Never SAM.
+I've used Terraform before. Never SAM.
 
 SAM handles Lambda packaging automatically. You point it at a directory, it zips and uploads:
 
 ```yaml
-EvaluatorLambda:
+OrchestratorLambda:
   Type: AWS::Serverless::Function
   Properties:
     Runtime: python3.13
-    Handler: evaluator.handler
+    Handler: orchestrator.handler
     CodeUri: ../lambda/    # SAM packages this
 ```
 
@@ -117,28 +158,27 @@ VectorIndex:
 
 No Python similarity code. Bedrock handles the vector search natively.
 
-Trade-off: S3 Vectors has a 2048-byte limit on filterable metadata per record. I'll get to that.
+Trade-off: S3 Vectors has a 2048-byte limit on filterable metadata per record. (see details below)
 
-### 3. Bedrock AgentCore
+### 3. Multi-Agent Patterns
 
-Instead of manually chaining retrieval + generation + evaluation in Python, the agent handles it:
+Understood the difference between:
 
-```yaml
-NotesAgent:
-  Type: AWS::Bedrock::Agent
-  Properties:
-    FoundationModel: amazon.nova-lite-v1:0
-    KnowledgeBases:
-      - KnowledgeBaseId: !Ref KnowledgeBase
-    ActionGroups:
-      - ActionGroupName: ResponseEvaluation
-        ActionGroupExecutor:
-          Lambda: !GetAtt EvaluatorLambda.Arn
-```
+- **Bedrock Flow**: Service orchestration, explicit control, no session memory between queries
+- **Bedrock Agent**: Autonomous decision-making within a role, built-in session management
+- **AgentCore**: Multi-agent collaboration, agents can delegate to each other
 
-The agent decides when to search, when to evaluate, when to revise. I just write the instructions.
+For this project, I chose individual agents coordinated by an orchestrator Lambda. This gives full control over the workflow while leveraging agent autonomy within each role.
 
-The bigger feature is multi-agent interactions. AgentCore makes it straightforward to have agents collaborate or delegate tasks to each other. For this project, the self-critique loop was mostly an excuse to play with that capability. It potentially costs more (each evaluation is another model call) and the real benefits need to be evaluated for each use case.
+---
+
+## Key Technical Choices
+
+1. **Agent Autonomy**: Each agent makes decisions within its role (search strategy, evaluation criteria, formatting style)
+2. **Shared Sessions**: Context preservation across agent calls via session ID
+3. **Feedback Loops**: Critique-driven improvement (max 3 iterations to limit cost)
+4. **Source Extraction**: Orchestrator extracts real filenames from Bedrock trace (agents were hallucinating sources)
+5. **Modular Architecture**: Infrastructure, agents, and API in separate nested stacks
 
 ---
 
@@ -164,42 +204,18 @@ VectorIndex:
 
 Catch: This must be set at index creation. I had to destroy the stack and redeploy.
 
-### Nova Lite 2 and the PRE_PROCESSING Trap
+### Agent Source Hallucination
 
-I asked about DynamoDB. My notes contain detailed information about DynamoDB. The agent returned `<__function=outOfDomain>` without even searching.
+Agents consistently invented plausible-sounding filenames instead of citing actual sources. Asked about SOLID principles, got "From Design Patterns Basics.md" when the real file was "SOLID & Design pattern.md".
 
-Nova Lite 2 has an aggressive PRE_PROCESSING step that classifies queries before searching. It was deciding "this isn't my job" and refusing to look at the knowledge base. Claude Haiku worked fine with the same setup.
+Tried multiple approaches:
+- Explicit instructions to copy exact filenames
+- Critique agent penalizing invented sources
+- Different prompt formats
 
-I overrode the PRE_PROCESSING step to skip domain classification:
+None worked reliably. Nova Lite models don't seem to have clear visibility into the S3 URIs from retrieval results.
 
-```yaml
-PromptOverrideConfiguration:
-  PromptConfigurations:
-    - PromptType: PRE_PROCESSING
-      PromptState: DISABLED
-      PromptCreationMode: OVERRIDDEN
-      BasePromptTemplate: |
-        {
-          "system": "Classify all inputs as Category D (can be answered by the agent).",
-          "messages": [{"role": "user", "content": [{"text": "Input: $question$"}]}]
-        }
-```
-
-When overriding prompts, you must use `PromptCreationMode: OVERRIDDEN` with a custom `BasePromptTemplate`. Can't mix and match. CloudFormation will reject it otherwise.
-
-### Nova Lite 2 Orchestration Issues
-
-Even after fixing PRE_PROCESSING, Nova Lite 2 had more issues. Some queries returned raw function markers instead of executing them:
-
-```
-<__function=GET__x_amz_knowledgebase_XXXXX__Search>
-<__parameter=searchQuery>S3</__parameter>
-</__function>
-```
-
-The behavior was inconsistent. "What is S3?" showed raw markers. "Explain S3 storage classes" worked fine. "What is SOLID?" hit content filters or timed out.
-
-I switched to **Nova Lite v1** (`amazon.nova-lite-v1:0`). Same price tier, stable orchestration. All queries work consistently. Nova Lite 2 might have a bug with Bedrock Agent orchestration, or maybe I'm missing something in my configuration. Either way, the older version works.
+The fix to make it work: Extract citations in the orchestrator. Bedrock's `invoke_agent` response includes trace data with `knowledgeBaseLookupOutput.retrievedReferences`. Each reference has `location.s3Location.uri`. Parse the filename, append to response. Real sources, no hallucination.
 
 ---
 
@@ -210,7 +226,7 @@ First query after deployment or idle:
 | Component | Time |
 |-----------|------|
 | API Lambda init | ~500ms |
-| Evaluator Lambda init | ~500ms per evaluation |
+| Orchestrator Lambda init | ~500ms |
 | Bedrock Agent session | variable |
 | Knowledge Base connection | first query slower |
 
@@ -224,16 +240,18 @@ virtualme has the same cold start issues. Serverless trade-off.
 
 ## Cost Comparison
 
-### This Project (S3 Vectors + AgentCore)
+### This Project (S3 Vectors + Multi-Agent)
 
 | Component | Monthly Cost |
 |-----------|-------------|
 | S3 Vectors storage | < $0.01 |
 | S3 Vectors queries | < $0.01 |
 | Titan Embeddings (ingestion) | < $0.01 |
-| Nova Lite v1 (queries) | ~$0.05-0.10 |
+| Nova 2 Lite (queries) | ~$0.10-0.30* |
 | Lambda | free tier |
-| **Total** | **~$0.10-0.15** |
+| **Total** | **~$0.15-0.35** |
+
+*Multi-agent adds cost: 3 agents per query, possibly 3 iterations if critique score < 7. Worst case: 9 agent calls per query.
 
 ### virtualme (DynamoDB)
 
@@ -264,6 +282,40 @@ DynamoDB is cheaper because I hacked it. In virtualme, I scan all items and calc
 
 S3 Vectors costs slightly more but removes all that custom code. Native similarity search, no client-side calculations, no manual orchestration. For anything larger than a small personal project, managed infrastructure wins.
 
+Multi-agent adds overhead. Each query involves 3+ model calls. Worth it for complex reasoning tasks, overkill for simple Q&A.
+
+---
+
+## Model Specialization (Future Improvement)
+
+Currently all three agents use the same model (Nova 2 Lite). Using different models per role would improve results:
+
+- **Different Strengths**: Each model brings different capabilities
+- **Error Correction**: Claude might catch what Nova misses
+- **Cost Optimization**: Use expensive models only where needed (e.g., Claude for critique, Nova for research)
+- **Quality Improvement**: Specialized models for specialized tasks
+
+I kept it simple for this learning exercise. Model specialization is a next step.
+
+---
+
+## Next Learning Path
+
+### 1. Peer-to-Peer Agent Communication
+Current architecture uses orchestrator-driven coordination. Agents don't talk to each other directly.
+
+Next exploration:
+- Research agent directly asks critique agent for guidance mid-search
+- Agents negotiate who handles which part of a complex query
+- Dynamic task decomposition without central orchestrator
+
+This requires AgentCore's agent-to-agent invocation. Different trade-offs: more autonomous, but less predictable, should be harder to debug.
+
+### 2. Model Specialization Experiment
+- A/B test different model combinations per agent role
+- Compare: Claude Haiku vs Nova Lite 2 vs Nova Micro 2
+- Track: cost per query, response quality, iteration count
+
 ---
 
 ## Prerequisites
@@ -271,7 +323,7 @@ S3 Vectors costs slightly more but removes all that custom code. Native similari
 - AWS CLI configured
 - SAM CLI installed
 - `jq` (`brew install jq`)
-- Bedrock model access in eu-west-3 (Nova Lite v1, Titan Embeddings)
+- Bedrock model access in eu-west-3 (Nova 2 Lite, Titan Embeddings)
 - Python 3 with `boto3` and `requests`
 
 ## Usage
@@ -299,15 +351,15 @@ python3 client.py "What is DynamoDB?"
 
 2. **Different LLMs behave differently.** Nova and Claude interpret the same agent prompts differently. Test with your actual model.
 
-3. **Nova Lite 2 had issues with agent orchestration.** It sometimes output function calls as text instead of executing them. Could be a bug, could be my configuration. Nova Lite v1 (older version) works fine. Not all model versions behave the same for agent orchestration.
+3. **Agents hallucinate sources.** Even with explicit instructions, models invent plausible filenames. Extract citations from the API trace, not the model output.
 
 4. **SAM is convenient but adds abstraction.** When it works, great. When it breaks, you're debugging two layers.
 
-5. **AgentCore simplifies orchestration.** No manual chaining of retrieval + generation. But you lose visibility into the middle steps.
+5. **Multi-agent adds complexity and cost.** 3 agents × 3 iterations = 9 model calls worst case. Worth it for quality, overkill for simple queries.
 
-6. **Multi-agent is the real value.** AgentCore makes agent collaboration easy to set up. Whether it's worth the extra cost depends on your use case.
+6. **Orchestrator gives control.** Lambda-based orchestration lets you extract trace data, manage iterations, and append real sources. Pure agent-to-agent would lose this visibility.
 
-7. **Free tier is hard to beat (in my case).** DynamoDB + custom code is cheaper only because I have fewer than 1000 chunks. I scan everything and compute similarity client-side. This hack won't scale. For anything larger, managed services like S3 Vectors are the right choice.
+7. **Free tier is hard to beat (in my case).** DynamoDB + custom code is cheaper only because I have fewer than 1000 chunks. This hack won't scale. For anything larger, managed services like S3 Vectors are the right choice.
 
 ---
 

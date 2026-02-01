@@ -3,5 +3,9 @@
   "notesDirectory": "/path/to/your/notes/",
   "s3": {
     "bucketName": "your-unique-bucket-name"
+  },
+  "models": {
+    "agent": "eu.amazon.nova-2-lite-v1:0",
+    "embedding": "amazon.titan-embed-text-v2:0"
   }
 }

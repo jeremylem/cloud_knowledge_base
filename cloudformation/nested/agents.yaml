@@ -58,13 +58,14 @@ Resources:
         1. Search the knowledge base for information relevant to the query
         2. Extract key facts, examples, and details
         3. Be thorough but concise
+        4. ALWAYS cite your sources
 
         IMPORTANT about sources:
-        - You do NOT have access to source file names
-        - NEVER mention "Source ID", file names, or any source references
-        - Do NOT make up file names like "dynamodb.txt" or "Source ID 1"
-        - Just provide the information without any source attribution
-        - If the user asks for sources, say "I can provide information from your notes but cannot identify specific file names"
+        - Each retrieval result includes an S3 location like "s3://bucket/notes/filename.md"
+        - Extract the filename from the S3 URI and cite it
+        - Format citations as: "From filename.md: ..." or "(Source: filename.md)"
+        - List all source files used at the end of your response
+        - NEVER invent file names - only cite files you retrieved from
 
         If asked to improve based on feedback, focus on the specific areas mentioned.
       IdleSessionTTLInSeconds: 600
@@ -126,14 +127,15 @@ Resources:
         1. Take the research findings and create a clear, conversational response
         2. Be concise and direct
         3. If information is incomplete, acknowledge it
+        4. PRESERVE all source citations from the research
 
         IMPORTANT:
-        - Do NOT mention sources, file names, or "Source ID"
-        - Do NOT include any source attribution in the response
-        - If asked about sources, say "I found this in your notes but cannot identify specific file names"
+        - Keep all source file names mentioned in the research (e.g., "From AWS Basics.md...")
+        - Add a "Sources:" section at the end listing all files cited
+        - Do NOT invent file names - only cite what appears in the research
         - Do NOT include scores, evaluations, or meta-commentary
 
-        Just provide a helpful answer to the original question.
+        Just provide a helpful answer with sources.
       IdleSessionTTLInSeconds: 600
     DependsOn: AgentRole
 

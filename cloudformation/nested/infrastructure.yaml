@@ -100,7 +100,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                  - bedrock:GetInferenceProfile
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-lite-v1:0"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0"
 
   # Bedrock Knowledge Base with S3 Vectors
   KnowledgeBase:
@@ -121,13 +125,13 @@ Resources:
       - VectorIndex
       - BedrockKnowledgeBaseRole
 
-  # Data Source pointing to notes S3 bucket
+  # Data Source with parsing to embed filename in content
   DataSource:
     Type: AWS::Bedrock::DataSource
     Properties:
       KnowledgeBaseId: !Ref KnowledgeBase
       Name: notes-s3-source
-      Description: S3 data source for notes
+      Description: S3 data source for notes with source filename in chunks
       DataSourceConfiguration:
         Type: S3
         S3Configuration:
@@ -140,7 +144,22 @@ Resources:
           FixedSizeChunkingConfiguration:
             MaxTokens: 300
             OverlapPercentage: 10
-    DependsOn: KnowledgeBase
+        ParsingConfiguration:
+          ParsingStrategy: BEDROCK_FOUNDATION_MODEL
+          BedrockFoundationModelConfiguration:
+            ModelArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-lite-v1:0"
+            ParsingPrompt:
+              ParsingPromptText: |
+                Extract and preserve all content from this document.
+                Prepend the source filename to the output.
+
+                Source: $document.source_uri$
+
+                Output format:
+                [Source: <filename from source_uri>]
+                <original document content>
+    DependsOn:
+      - KnowledgeBase
 
 Outputs:
   NotesBucketName:

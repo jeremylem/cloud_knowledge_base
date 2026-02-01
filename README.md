@@ -1,5 +1,12 @@
 # Notes Assistant with Bedrock Multi-Agent
 
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-orange)
+![Amazon Bedrock](https://img.shields.io/badge/Amazon-Bedrock-purple)
+![S3 Vectors](https://img.shields.io/badge/Amazon-S3_Vectors-green)
+![AWS SAM](https://img.shields.io/badge/AWS-SAM-yellow)
+![CloudFormation](https://img.shields.io/badge/AWS-CloudFormation-red)
+
 A RAG chatbot for personal notes using S3 Vectors and Bedrock Agents. Features true multi-agent collaboration with critique-driven feedback loop and multi-turn conversations. Built as a learning exercise after re:Invent 2025.
 
 ## Why I Built This

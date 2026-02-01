@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import boto3
 import json
+import readline  # enables line editing (backspace, arrows, history)
 import sys
 import uuid
 from botocore.auth import SigV4Auth

@@ -10,6 +10,12 @@ Parameters:
     Type: String
     Default: notes-knowledge-base
     Description: Name for the knowledge base
+  AgentModelId:
+    Type: String
+    Description: Model ID for agents (e.g., eu.amazon.nova-lite-v1:0)
+  EmbeddingModelId:
+    Type: String
+    Description: Model ID for embeddings (e.g., amazon.titan-embed-text-v2:0)
 
 Resources:
   InfrastructureStack:
@@ -19,6 +25,7 @@ Resources:
       Parameters:
         BucketName: !Ref BucketName
         KnowledgeBaseName: !Ref KnowledgeBaseName
+        EmbeddingModelId: !Ref EmbeddingModelId
 
   AgentsStack:
     Type: AWS::CloudFormation::Stack
@@ -27,6 +34,7 @@ Resources:
       Parameters:
         KnowledgeBaseName: !Ref KnowledgeBaseName
         KnowledgeBaseId: !GetAtt InfrastructureStack.Outputs.KnowledgeBaseId
+        AgentModelId: !Ref AgentModelId
     DependsOn: InfrastructureStack
 
   ApiStack:

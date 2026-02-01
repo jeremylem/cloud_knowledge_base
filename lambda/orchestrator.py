@@ -1,7 +1,7 @@
 import boto3
-import json
-import re
 import os
+import re
+import urllib.parse
 import uuid
 
 bedrock = boto3.client('bedrock-agent-runtime')
@@ -16,23 +16,65 @@ MAX_ITERATIONS = int(os.environ.get('MAX_ITERATIONS', '3'))
 MIN_SCORE = int(os.environ.get('MIN_SCORE', '7'))
 
 
-def invoke_agent(agent_id, agent_alias_id, input_text, session_id):
-    """Invoke a Bedrock agent and extract the response text."""
+def extract_filename_from_uri(uri):
+    """Extract filename from S3 URI like s3://bucket/notes/file.md -> file.md"""
+    if not uri:
+        return None
+    # Get the last part of the path
+    filename = uri.split('/')[-1]
+    # URL decode the filename
+    return urllib.parse.unquote(filename)
+
+
+def invoke_agent(agent_id, agent_alias_id, input_text, session_id, collect_citations=False):
+    """Invoke a Bedrock agent and extract the response text and optionally citations."""
     response = bedrock.invoke_agent(
         agentId=agent_id,
         agentAliasId=agent_alias_id,
         sessionId=session_id,
-        inputText=input_text
+        inputText=input_text,
+        enableTrace=collect_citations
     )
 
     # Process streaming response
     completion = ""
+    citations = set()
+
     for event in response.get('completion', []):
         if 'chunk' in event:
             chunk = event['chunk']
             if 'bytes' in chunk:
                 completion += chunk['bytes'].decode('utf-8')
 
+            # Extract citations from chunk attribution
+            if collect_citations and 'attribution' in chunk:
+                for citation in chunk['attribution'].get('citations', []):
+                    for ref in citation.get('retrievedReferences', []):
+                        location = ref.get('location', {})
+                        s3_location = location.get('s3Location', {})
+                        uri = s3_location.get('uri', '')
+                        filename = extract_filename_from_uri(uri)
+                        if filename:
+                            citations.add(filename)
+
+        # Also check trace for retrieval results
+        if collect_citations and 'trace' in event:
+            trace = event['trace'].get('trace', {})
+            orchestration_trace = trace.get('orchestrationTrace', {})
+
+            # Check knowledge base lookup output
+            observation = orchestration_trace.get('observation', {})
+            kb_lookup = observation.get('knowledgeBaseLookupOutput', {})
+            for ref in kb_lookup.get('retrievedReferences', []):
+                location = ref.get('location', {})
+                s3_location = location.get('s3Location', {})
+                uri = s3_location.get('uri', '')
+                filename = extract_filename_from_uri(uri)
+                if filename:
+                    citations.add(filename)
+
+    if collect_citations:
+        return completion, citations
     return completion
 
 
@@ -45,7 +87,7 @@ def extract_score(critique_text):
 def extract_feedback(critique_text):
     """Parse 'Feedback: [details]' from critique response."""
     match = re.search(r'Feedback:\s*(.+)', critique_text, re.DOTALL)
-    return match.group(1).strip() if match else "Please provide more detail and citations"
+    return match.group(1).strip() if match else "Please provide more detail"
 
 
 def handler(event, context):
@@ -65,24 +107,28 @@ def handler(event, context):
     feedback = None
     research = None
     score = 0
+    all_citations = set()
 
     for iteration in range(MAX_ITERATIONS):
         print(f"--- Iteration {iteration + 1}/{MAX_ITERATIONS} ---")
 
-        # Step 1: Research Agent
+        # Step 1: Research Agent (collect citations)
         if iteration == 0:
             research_prompt = query
         else:
             research_prompt = f"{query}\n\nPlease improve your research based on this feedback: {feedback}"
 
         print(f"Invoking Research Agent...")
-        research = invoke_agent(
+        research, citations = invoke_agent(
             RESEARCH_AGENT_ID,
             RESEARCH_AGENT_ALIAS_ID,
             research_prompt,
-            session_id
+            session_id,
+            collect_citations=True
         )
+        all_citations.update(citations)
         print(f"Research response length: {len(research)}")
+        print(f"Citations found: {citations}")
 
         # Step 2: Critique Agent
         critique_prompt = f"Evaluate this research for the query '{query}':\n\n{research}"
@@ -117,15 +163,22 @@ def handler(event, context):
         session_id
     )
 
+    # Append real sources to response
+    if all_citations:
+        sources_list = sorted(all_citations)
+        sources_text = "\n\nSources:\n" + "\n".join(f"- {s}" for s in sources_list)
+        response = response.rstrip() + sources_text
+
     result = {
         'response': response,
         'session_id': session_id,
         'iterations': iteration + 1,
-        'final_score': score
+        'final_score': score,
+        'sources': sorted(all_citations)
     }
 
     if iteration + 1 == MAX_ITERATIONS and score < MIN_SCORE:
         result['max_iterations_reached'] = True
 
-    print(f"Orchestration complete: {iteration + 1} iterations, score {score}")
+    print(f"Orchestration complete: {iteration + 1} iterations, score {score}, sources: {all_citations}")
     return result

@@ -33,7 +33,7 @@ aws s3api delete-objects \
         --bucket "$BUCKET_NAME" \
         --region "$REGION" \
         --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-        --output json 2>/dev/null)" 2>/dev/null || true
+        --output json 2>/dev/null)" > /dev/null 2>&1 || true
 
 # Delete delete markers
 aws s3api delete-objects \
@@ -43,7 +43,7 @@ aws s3api delete-objects \
         --bucket "$BUCKET_NAME" \
         --region "$REGION" \
         --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-        --output json 2>/dev/null)" 2>/dev/null || true
+        --output json 2>/dev/null)" > /dev/null 2>&1 || true
 
 # Delete CloudFormation stack
 echo "Deleting CloudFormation stack..."

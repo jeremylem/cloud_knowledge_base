@@ -8,12 +8,16 @@ CONFIG_FILE="$SCRIPT_DIR/config.json"
 REGION=$(jq -r '.region' "$CONFIG_FILE")
 BUCKET_NAME=$(jq -r '.s3.bucketName' "$CONFIG_FILE")
 NOTES_DIR=$(jq -r '.notesDirectory' "$CONFIG_FILE")
+AGENT_MODEL=$(jq -r '.models.agent' "$CONFIG_FILE")
+EMBEDDING_MODEL=$(jq -r '.models.embedding' "$CONFIG_FILE")
 STACK_NAME="notes-assistant"
 
 echo "=== Notes Assistant - Complete Deployment ==="
 echo "Region: $REGION"
 echo "Bucket: $BUCKET_NAME"
 echo "Notes directory: $NOTES_DIR"
+echo "Agent model: $AGENT_MODEL"
+echo "Embedding model: $EMBEDDING_MODEL"
 echo ""
 
 # Validate notes directory exists
@@ -42,7 +46,10 @@ echo "Deploying complete Notes Assistant infrastructure..."
 sam deploy \
     --template-file "$SCRIPT_DIR/.aws-sam/build/template.yaml" \
     --stack-name "$STACK_NAME" \
-    --parameter-overrides BucketName="$BUCKET_NAME" \
+    --parameter-overrides \
+        BucketName="$BUCKET_NAME" \
+        AgentModelId="$AGENT_MODEL" \
+        EmbeddingModelId="$EMBEDDING_MODEL" \
     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --region "$REGION" \
     --resolve-s3 \

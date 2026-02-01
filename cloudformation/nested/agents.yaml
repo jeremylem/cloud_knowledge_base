@@ -6,9 +6,9 @@ Parameters:
     Type: String
   KnowledgeBaseId:
     Type: String
-  FoundationModelId:
+  AgentModelId:
     Type: String
-    Default: eu.amazon.nova-lite-v1:0
+    Description: Model ID for agents (e.g., eu.amazon.nova-lite-v1:0)
 
 Resources:
   # IAM Role for Agents
@@ -50,7 +50,7 @@ Resources:
     Properties:
       AgentName: !Sub "${KnowledgeBaseName}-research"
       AgentResourceRoleArn: !GetAtt AgentRole.Arn
-      FoundationModel: !Ref FoundationModelId
+      FoundationModel: !Ref AgentModelId
       Instruction: |
         You are a research assistant that searches a personal knowledge base.
 
@@ -58,16 +58,9 @@ Resources:
         1. Search the knowledge base for information relevant to the query
         2. Extract key facts, examples, and details
         3. Be thorough but concise
-        4. ALWAYS cite your sources
 
-        IMPORTANT about sources:
-        - Each retrieval result includes an S3 location like "s3://bucket/notes/filename.md"
-        - Extract the filename from the S3 URI and cite it
-        - Format citations as: "From filename.md: ..." or "(Source: filename.md)"
-        - List all source files used at the end of your response
-        - NEVER invent file names - only cite files you retrieved from
-
-        If asked to improve based on feedback, focus on the specific areas mentioned.
+        Do NOT include source citations - they will be added automatically.
+        Focus on providing accurate, relevant information from the knowledge base.
       IdleSessionTTLInSeconds: 600
       KnowledgeBases:
         - KnowledgeBaseId: !Ref KnowledgeBaseId
@@ -88,15 +81,15 @@ Resources:
     Properties:
       AgentName: !Sub "${KnowledgeBaseName}-critique"
       AgentResourceRoleArn: !GetAtt AgentRole.Arn
-      FoundationModel: !Ref FoundationModelId
+      FoundationModel: !Ref AgentModelId
       Instruction: |
         You are a quality evaluator for research responses.
 
         Evaluate the research on:
         1. Relevance - Does it address the query?
         2. Completeness - Are key aspects covered?
-        3. Accuracy - Is information properly cited?
-        4. Clarity - Is it well-organized?
+        3. Accuracy - Is the information correct and well-supported?
+        4. Clarity - Is it well-organized and easy to understand?
 
         Provide your evaluation in this exact format:
         Score: X/10
@@ -119,7 +112,7 @@ Resources:
     Properties:
       AgentName: !Sub "${KnowledgeBaseName}-formatter"
       AgentResourceRoleArn: !GetAtt AgentRole.Arn
-      FoundationModel: !Ref FoundationModelId
+      FoundationModel: !Ref AgentModelId
       Instruction: |
         You are a response formatter that creates helpful, natural answers.
 
@@ -127,15 +120,12 @@ Resources:
         1. Take the research findings and create a clear, conversational response
         2. Be concise and direct
         3. If information is incomplete, acknowledge it
-        4. PRESERVE all source citations from the research
 
         IMPORTANT:
-        - Keep all source file names mentioned in the research (e.g., "From AWS Basics.md...")
-        - Add a "Sources:" section at the end listing all files cited
-        - Do NOT invent file names - only cite what appears in the research
+        - Do NOT include source citations - they will be added automatically
         - Do NOT include scores, evaluations, or meta-commentary
 
-        Just provide a helpful answer with sources.
+        Just provide a helpful, well-organized answer.
       IdleSessionTTLInSeconds: 600
     DependsOn: AgentRole
 

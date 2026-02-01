@@ -6,6 +6,9 @@ Parameters:
     Type: String
   KnowledgeBaseName:
     Type: String
+  EmbeddingModelId:
+    Type: String
+    Description: Model ID for embeddings (e.g., amazon.titan-embed-text-v2:0)
 
 Resources:
   # S3 Bucket for Notes (source documents)
@@ -100,11 +103,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                  - bedrock:GetInferenceProfile
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-lite-v1:0"
-                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
 
   # Bedrock Knowledge Base with S3 Vectors
   KnowledgeBase:
@@ -116,7 +116,7 @@ Resources:
       KnowledgeBaseConfiguration:
         Type: VECTOR
         VectorKnowledgeBaseConfiguration:
-          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
       StorageConfiguration:
         Type: S3_VECTORS
         S3VectorsConfiguration:
@@ -125,13 +125,13 @@ Resources:
       - VectorIndex
       - BedrockKnowledgeBaseRole
 
-  # Data Source with parsing to embed filename in content
+  # Data Source for notes
   DataSource:
     Type: AWS::Bedrock::DataSource
     Properties:
       KnowledgeBaseId: !Ref KnowledgeBase
       Name: notes-s3-source
-      Description: S3 data source for notes with source filename in chunks
+      Description: S3 data source for personal notes
       DataSourceConfiguration:
         Type: S3
         S3Configuration:
@@ -144,20 +144,6 @@ Resources:
           FixedSizeChunkingConfiguration:
             MaxTokens: 300
             OverlapPercentage: 10
-        ParsingConfiguration:
-          ParsingStrategy: BEDROCK_FOUNDATION_MODEL
-          BedrockFoundationModelConfiguration:
-            ModelArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-lite-v1:0"
-            ParsingPrompt:
-              ParsingPromptText: |
-                Extract and preserve all content from this document.
-                Prepend the source filename to the output.
-
-                Source: $document.source_uri$
-
-                Output format:
-                [Source: <filename from source_uri>]
-                <original document content>
     DependsOn:
       - KnowledgeBase
 

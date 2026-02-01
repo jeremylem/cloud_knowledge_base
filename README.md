@@ -4,7 +4,7 @@ A RAG chatbot for personal notes using S3 Vectors and Bedrock Agents. Features t
 
 ## Why I Built This
 
-I already have [virtualme](https://github.com/ox00004a/virtualme) running in production. It's a RAG chatbot using DynamoDB for vector storage. It works, stays in free tier, does the job.
+I already have [virtualme](https://github.com/jeremylem/virtualme) running in production. It's a RAG chatbot using DynamoDB for vector storage. It works, stays in free tier, does the job.
 
 But re:Invent 2025 announced two things that caught my attention:
 
@@ -108,6 +108,7 @@ python client.py "What is DynamoDB?"
 The orchestrator is a Python Lambda (`orchestrator.handler`) that coordinates the multi-agent workflow. It receives the query, manages the critique loop, and assembles the final response.
 
 Key implementation details:
+
 - Calls `bedrock.invoke_agent()` with `enableTrace=True` to capture retrieval metadata
 - Parses `knowledgeBaseLookupOutput.retrievedReferences` from trace to extract real S3 URIs
 - Extracts filenames from URIs and appends them as sources (agents hallucinate filenames, so this is done server-side)
@@ -130,7 +131,7 @@ OrchestratorLambda:
   Properties:
     Runtime: python3.13
     Handler: orchestrator.handler
-    CodeUri: ../lambda/    # SAM packages this
+    CodeUri: ../lambda/ # SAM packages this
 ```
 
 Run `sam build`, it creates `.aws-sam/build/` with deployment artifacts. Run `sam deploy --resolve-s3`, it handles the S3 bucket for you.
@@ -141,6 +142,7 @@ Bad: Another abstraction layer to debug when things break.
 ### 2. S3 Vectors vs DynamoDB
 
 **virtualme approach:**
+
 ```python
 # Client-side similarity calculation
 for item in dynamodb.scan():
@@ -148,12 +150,13 @@ for item in dynamodb.scan():
 ```
 
 **S3 Vectors approach:**
+
 ```yaml
 VectorIndex:
   Type: AWS::S3Vectors::Index
   Properties:
     Dimension: 1024
-    DistanceMetric: cosine   # server-side!
+    DistanceMetric: cosine # server-side!
 ```
 
 No Python similarity code. Bedrock handles the vector search natively.
@@ -209,6 +212,7 @@ Catch: This must be set at index creation. I had to destroy the stack and redepl
 Agents consistently invented plausible-sounding filenames instead of citing actual sources. Asked about SOLID principles, got "From Design Patterns Basics.md" when the real file was "SOLID & Design pattern.md".
 
 Tried multiple approaches:
+
 - Explicit instructions to copy exact filenames
 - Critique agent penalizing invented sources
 - Different prompt formats
@@ -223,11 +227,11 @@ The fix to make it work: Extract citations in the orchestrator. Bedrock's `invok
 
 First query after deployment or idle:
 
-| Component | Time |
-|-----------|------|
-| API Lambda init | ~500ms |
-| Orchestrator Lambda init | ~500ms |
-| Bedrock Agent session | variable |
+| Component                 | Time               |
+| ------------------------- | ------------------ |
+| API Lambda init           | ~500ms             |
+| Orchestrator Lambda init  | ~500ms             |
+| Bedrock Agent session     | variable           |
 | Knowledge Base connection | first query slower |
 
 **First query:** 15-30 seconds (everything cold)
@@ -242,25 +246,25 @@ virtualme has the same cold start issues. Serverless trade-off.
 
 ### This Project (S3 Vectors + Multi-Agent)
 
-| Component | Monthly Cost |
-|-----------|-------------|
-| S3 Vectors storage | < $0.01 |
-| S3 Vectors queries | < $0.01 |
-| Titan Embeddings (ingestion) | < $0.01 |
-| Nova 2 Lite (queries) | ~$0.10-0.30* |
-| Lambda | free tier |
-| **Total** | **~$0.15-0.35** |
+| Component                    | Monthly Cost    |
+| ---------------------------- | --------------- |
+| S3 Vectors storage           | < $0.01         |
+| S3 Vectors queries           | < $0.01         |
+| Titan Embeddings (ingestion) | < $0.01         |
+| Nova 2 Lite (queries)        | ~$0.10-0.30\*   |
+| Lambda                       | free tier       |
+| **Total**                    | **~$0.15-0.35** |
 
-*Multi-agent adds cost: 3 agents per query, possibly 3 iterations if critique score < 7. Worst case: 9 agent calls per query.
+\*Multi-agent adds cost: 3 agents per query, possibly 3 iterations if critique score < 7. Worst case: 9 agent calls per query.
 
 ### virtualme (DynamoDB)
 
-| Component | Monthly Cost |
-|-----------|-------------|
-| DynamoDB | free tier |
-| Bedrock model | ~$0.05-0.10 |
-| Lambda | free tier |
-| **Total** | **~$0.05-0.10** |
+| Component     | Monthly Cost    |
+| ------------- | --------------- |
+| DynamoDB      | free tier       |
+| Bedrock model | ~$0.05-0.10     |
+| Lambda        | free tier       |
+| **Total**     | **~$0.05-0.10** |
 
 ### Session Storage
 
@@ -302,9 +306,11 @@ I kept it simple for this learning exercise. Model specialization is a next step
 ## Next Learning Path
 
 ### 1. Peer-to-Peer Agent Communication
+
 Current architecture uses orchestrator-driven coordination. Agents don't talk to each other directly.
 
 Next exploration:
+
 - Research agent directly asks critique agent for guidance mid-search
 - Agents negotiate who handles which part of a complex query
 - Dynamic task decomposition without central orchestrator
@@ -312,6 +318,7 @@ Next exploration:
 This requires AgentCore's agent-to-agent invocation. Different trade-offs: more autonomous, but less predictable, should be harder to debug.
 
 ### 2. Model Specialization Experiment
+
 - A/B test different model combinations per agent role
 - Compare: Claude Haiku vs Nova Lite 2 vs Nova Micro 2
 - Track: cost per query, response quality, iteration count

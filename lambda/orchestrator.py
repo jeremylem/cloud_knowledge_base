@@ -163,11 +163,14 @@ def handler(event, context):
         session_id
     )
 
+    # Strip any hallucinated sources from agent response
+    response = re.split(r'\n\s*Sources?:', response, flags=re.IGNORECASE)[0].rstrip()
+
     # Append real sources to response
     if all_citations:
         sources_list = sorted(all_citations)
         sources_text = "\n\nSources:\n" + "\n".join(f"- {s}" for s in sources_list)
-        response = response.rstrip() + sources_text
+        response = response + sources_text
 
     result = {
         'response': response,

@@ -34,7 +34,7 @@ fi
 # Build with SAM (packages Lambda code)
 echo "Building SAM application..."
 sam build \
-    --template-file "$SCRIPT_DIR/cloudformation/notes-assistant-s3.yaml" \
+    --template-file "$SCRIPT_DIR/cloudformation/template.yaml" \
     --build-dir "$SCRIPT_DIR/.aws-sam/build"
 
 # Deploy with SAM
@@ -43,7 +43,7 @@ sam deploy \
     --template-file "$SCRIPT_DIR/.aws-sam/build/template.yaml" \
     --stack-name "$STACK_NAME" \
     --parameter-overrides BucketName="$BUCKET_NAME" \
-    --capabilities CAPABILITY_NAMED_IAM \
+    --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
     --region "$REGION" \
     --resolve-s3 \
     --no-fail-on-empty-changeset

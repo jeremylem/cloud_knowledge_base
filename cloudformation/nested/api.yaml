@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Notes Assistant - API (Orchestrator + HTTP endpoint)
+
+Parameters:
+  KnowledgeBaseName:
+    Type: String
+  ResearchAgentId:
+    Type: String
+  ResearchAgentAliasId:
+    Type: String
+  CritiqueAgentId:
+    Type: String
+  CritiqueAgentAliasId:
+    Type: String
+  FormatterAgentId:
+    Type: String
+  FormatterAgentAliasId:
+    Type: String
+  MaxIterations:
+    Type: Number
+    Default: 3
+  MinScore:
+    Type: Number
+    Default: 7
+
+Resources:
+  # Orchestrator Lambda - coordinates multi-agent workflow
+  OrchestratorLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${KnowledgeBaseName}-orchestrator"
+      Runtime: python3.13
+      Handler: orchestrator.handler
+      CodeUri: ../../lambda/
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          RESEARCH_AGENT_ID: !Ref ResearchAgentId
+          RESEARCH_AGENT_ALIAS_ID: !Ref ResearchAgentAliasId
+          CRITIQUE_AGENT_ID: !Ref CritiqueAgentId
+          CRITIQUE_AGENT_ALIAS_ID: !Ref CritiqueAgentAliasId
+          FORMATTER_AGENT_ID: !Ref FormatterAgentId
+          FORMATTER_AGENT_ALIAS_ID: !Ref FormatterAgentAliasId
+          MAX_ITERATIONS: !Ref MaxIterations
+          MIN_SCORE: !Ref MinScore
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeAgent
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${ResearchAgentId}/*"
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${CritiqueAgentId}/*"
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${FormatterAgentId}/*"
+
+  # API Lambda - HTTP endpoint
+  ApiLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${KnowledgeBaseName}-api"
+      Runtime: python3.13
+      Handler: api.handler
+      CodeUri: ../../lambda/
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          ORCHESTRATOR_FUNCTION_NAME: !Ref OrchestratorLambda
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt OrchestratorLambda.Arn
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - POST
+          AllowHeaders:
+            - Content-Type
+
+Outputs:
+  OrchestratorLambdaArn:
+    Value: !GetAtt OrchestratorLambda.Arn
+
+  ApiLambdaArn:
+    Value: !GetAtt ApiLambda.Arn
+
+  ApiEndpoint:
+    Value: !GetAtt ApiLambdaUrl.FunctionUrl

@@ -1,62 +1,74 @@
 import boto3
-from botocore.config import Config
 import json
 import os
 
-# Increase read timeout for agent invocations (default 60s is too short)
-bedrock = boto3.client(
-    'bedrock-agent-runtime',
-    config=Config(read_timeout=110)
-)
+lambda_client = boto3.client('lambda')
+
+ORCHESTRATOR_FUNCTION_NAME = os.environ.get('ORCHESTRATOR_FUNCTION_NAME')
 
 
 def handler(event, context):
     try:
+        # Parse request body
         body = json.loads(event.get('body', '{}'))
-        query = body.get('query', '')
+        query = body.get('query')
+        session_id = body.get('session_id')
 
         if not query:
             return {
                 'statusCode': 400,
+                'headers': {'Content-Type': 'application/json'},
                 'body': json.dumps({'error': 'Missing query parameter'})
             }
 
-        response = bedrock.invoke_agent(
-            agentId=os.environ['AGENT_ID'],
-            agentAliasId=os.environ['AGENT_ALIAS_ID'],
-            sessionId=body.get('session_id', 'default'),
-            inputText=query
+        print(f"Invoking orchestrator for query: {query}")
+
+        # Build orchestrator payload
+        orchestrator_payload = {'query': query}
+        if session_id:
+            orchestrator_payload['session_id'] = session_id
+
+        # Invoke orchestrator Lambda
+        response = lambda_client.invoke(
+            FunctionName=ORCHESTRATOR_FUNCTION_NAME,
+            InvocationType='RequestResponse',
+            Payload=json.dumps(orchestrator_payload)
         )
 
-        # Collect response chunks
-        answer = ""
-        for event in response['completion']:
-            if 'chunk' in event:
-                chunk = event['chunk']
-                if 'bytes' in chunk:
-                    answer += chunk['bytes'].decode('utf-8')
+        # Parse orchestrator response
+        result = json.loads(response['Payload'].read().decode('utf-8'))
 
-        # Detect raw function markers (agent orchestration failure)
-        if '<__function=' in answer or '<__parameter=' in answer:
+        # Check for errors
+        if 'error' in result:
             return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'error': 'Agent orchestration failed. Try rephrasing your question.',
-                    'query': query
-                })
+                'statusCode': result.get('statusCode', 500),
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': result['error']})
             }
 
+        # Return successful response
         return {
             'statusCode': 200,
             'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({
-                'answer': answer,
-                'query': query
+                'answer': result.get('response', ''),
+                'query': query,
+                'metadata': {
+                    'iterations': result.get('iterations', 1),
+                    'score': result.get('final_score', 0),
+                    'session_id': result.get('session_id', ''),
+                    'max_iterations_reached': result.get('max_iterations_reached', False)
+                }
             })
         }
 
     except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
         return {
             'statusCode': 500,
+            'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({'error': str(e)})
         }

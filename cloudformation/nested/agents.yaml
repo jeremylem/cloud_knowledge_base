@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Notes Assistant - Bedrock Agents (Research, Critique, Formatter)
+
+Parameters:
+  KnowledgeBaseName:
+    Type: String
+  KnowledgeBaseId:
+    Type: String
+  FoundationModelId:
+    Type: String
+    Default: eu.amazon.nova-lite-v1:0
+
+Resources:
+  # IAM Role for Agents
+  AgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${KnowledgeBaseName}-agent-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: BedrockAgentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:GetInferenceProfile
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::inference-profile/*"
+                  - !Sub "arn:aws:bedrock:*::foundation-model/*"
+              - Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
+
+  # Research Agent - searches KB and extracts facts
+  ResearchAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: !Sub "${KnowledgeBaseName}-research"
+      AgentResourceRoleArn: !GetAtt AgentRole.Arn
+      FoundationModel: !Ref FoundationModelId
+      Instruction: |
+        You are a research assistant that searches a personal knowledge base.
+
+        Your task:
+        1. Search the knowledge base for information relevant to the query
+        2. Extract key facts, examples, and details
+        3. Be thorough but concise
+
+        IMPORTANT about sources:
+        - You do NOT have access to source file names
+        - NEVER mention "Source ID", file names, or any source references
+        - Do NOT make up file names like "dynamodb.txt" or "Source ID 1"
+        - Just provide the information without any source attribution
+        - If the user asks for sources, say "I can provide information from your notes but cannot identify specific file names"
+
+        If asked to improve based on feedback, focus on the specific areas mentioned.
+      IdleSessionTTLInSeconds: 600
+      KnowledgeBases:
+        - KnowledgeBaseId: !Ref KnowledgeBaseId
+          Description: Personal notes knowledge base
+          KnowledgeBaseState: ENABLED
+    DependsOn: AgentRole
+
+  ResearchAgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentId: !Ref ResearchAgent
+      AgentAliasName: live
+    DependsOn: ResearchAgent
+
+  # Critique Agent - evaluates research quality
+  CritiqueAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: !Sub "${KnowledgeBaseName}-critique"
+      AgentResourceRoleArn: !GetAtt AgentRole.Arn
+      FoundationModel: !Ref FoundationModelId
+      Instruction: |
+        You are a quality evaluator for research responses.
+
+        Evaluate the research on:
+        1. Relevance - Does it address the query?
+        2. Completeness - Are key aspects covered?
+        3. Accuracy - Is information properly cited?
+        4. Clarity - Is it well-organized?
+
+        Provide your evaluation in this exact format:
+        Score: X/10
+        Feedback: [specific improvements needed, or "Good quality" if score >= 7]
+
+        Be strict but fair. Score 7+ means acceptable quality.
+      IdleSessionTTLInSeconds: 600
+    DependsOn: AgentRole
+
+  CritiqueAgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentId: !Ref CritiqueAgent
+      AgentAliasName: live
+    DependsOn: CritiqueAgent
+
+  # Formatter Agent - creates natural responses
+  FormatterAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: !Sub "${KnowledgeBaseName}-formatter"
+      AgentResourceRoleArn: !GetAtt AgentRole.Arn
+      FoundationModel: !Ref FoundationModelId
+      Instruction: |
+        You are a response formatter that creates helpful, natural answers.
+
+        Your task:
+        1. Take the research findings and create a clear, conversational response
+        2. Be concise and direct
+        3. If information is incomplete, acknowledge it
+
+        IMPORTANT:
+        - Do NOT mention sources, file names, or "Source ID"
+        - Do NOT include any source attribution in the response
+        - If asked about sources, say "I found this in your notes but cannot identify specific file names"
+        - Do NOT include scores, evaluations, or meta-commentary
+
+        Just provide a helpful answer to the original question.
+      IdleSessionTTLInSeconds: 600
+    DependsOn: AgentRole
+
+  FormatterAgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentId: !Ref FormatterAgent
+      AgentAliasName: live
+    DependsOn: FormatterAgent
+
+Outputs:
+  ResearchAgentId:
+    Value: !Ref ResearchAgent
+
+  ResearchAgentAliasId:
+    Value: !GetAtt ResearchAgentAlias.AgentAliasId
+
+  CritiqueAgentId:
+    Value: !Ref CritiqueAgent
+
+  CritiqueAgentAliasId:
+    Value: !GetAtt CritiqueAgentAlias.AgentAliasId
+
+  FormatterAgentId:
+    Value: !Ref FormatterAgent
+
+  FormatterAgentAliasId:
+    Value: !GetAtt FormatterAgentAlias.AgentAliasId

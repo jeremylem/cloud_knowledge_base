@@ -39,21 +39,25 @@ class NotesAssistant:
         self.api_url = get_api_url()
         self.session_id = str(uuid.uuid4())
 
-    def query(self, question):
+    def query(self, question, verbose=False):
         payload = {"query": question, "session_id": self.session_id}
         headers = sign_request(self.api_url, payload)
 
-        response = requests.post(self.api_url, json=payload, headers=headers, timeout=120)
+        response = requests.post(self.api_url, json=payload, headers=headers, timeout=300)
 
         if response.status_code == 403:
-            return "Error: Access denied. Check your AWS credentials."
+            return {"answer": "Error: Access denied. Check your AWS credentials."}
 
         data = response.json()
 
         if "error" in data:
-            return f"Error: {data['error']}"
+            return {"answer": f"Error: {data['error']}"}
 
-        return data.get("answer", "No answer received")
+        result = {"answer": data.get("answer", "No answer received")}
+        if "metadata" in data:
+            result["metadata"] = data["metadata"]
+
+        return result
 
     def new_session(self):
         self.session_id = str(uuid.uuid4())
@@ -65,6 +69,7 @@ def interactive_mode():
     print("-" * 50)
 
     assistant = NotesAssistant()
+    verbose = False
     print(f"Session: {assistant.session_id[:8]}...")
     print()
 
@@ -84,30 +89,50 @@ def interactive_mode():
         elif question == "/new":
             assistant.new_session()
             print(f"New session: {assistant.session_id[:8]}...")
+        elif question == "/verbose":
+            verbose = not verbose
+            print(f"Verbose mode: {'on' if verbose else 'off'}")
         elif question == "/help":
             print("Commands:")
-            print("  /new   - Start new conversation session")
-            print("  /quit  - Exit")
-            print("  /help  - Show this help")
+            print("  /new     - Start new conversation session")
+            print("  /verbose - Toggle metadata display")
+            print("  /quit    - Exit")
+            print("  /help    - Show this help")
         else:
             print()
-            print(assistant.query(question))
+            result = assistant.query(question)
+            print(result["answer"])
+            if verbose and "metadata" in result:
+                meta = result["metadata"]
+                print()
+                print(f"[iterations: {meta.get('iterations', '?')}, score: {meta.get('score', '?')}/10]")
             print()
 
 
-def single_query(question):
+def single_query(question, verbose=False):
     """Run single query and exit."""
     assistant = NotesAssistant()
-    print(assistant.query(question))
+    result = assistant.query(question)
+    print(result["answer"])
+    if verbose and "metadata" in result:
+        meta = result["metadata"]
+        print()
+        print(f"[iterations: {meta.get('iterations', '?')}, score: {meta.get('score', '?')}/10]")
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         interactive_mode()
     elif len(sys.argv) == 2:
-        single_query(sys.argv[1])
+        if sys.argv[1] == "-v":
+            interactive_mode()
+        else:
+            single_query(sys.argv[1])
+    elif len(sys.argv) == 3 and sys.argv[1] == "-v":
+        single_query(sys.argv[2], verbose=True)
     else:
         print("Usage:")
-        print("  python client.py                  # Interactive mode")
-        print("  python client.py 'Your question'  # Single query")
+        print("  python client.py                     # Interactive mode")
+        print("  python client.py 'Your question'     # Single query")
+        print("  python client.py -v 'Your question'  # Single query with metadata")
         sys.exit(1)

@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Notes Assistant - Main Stack (Multi-Agent Orchestration)
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket for notes storage
+  KnowledgeBaseName:
+    Type: String
+    Default: notes-knowledge-base
+    Description: Name for the knowledge base
+
+Resources:
+  InfrastructureStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/infrastructure.yaml
+      Parameters:
+        BucketName: !Ref BucketName
+        KnowledgeBaseName: !Ref KnowledgeBaseName
+
+  AgentsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/agents.yaml
+      Parameters:
+        KnowledgeBaseName: !Ref KnowledgeBaseName
+        KnowledgeBaseId: !GetAtt InfrastructureStack.Outputs.KnowledgeBaseId
+    DependsOn: InfrastructureStack
+
+  ApiStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/api.yaml
+      Parameters:
+        KnowledgeBaseName: !Ref KnowledgeBaseName
+        ResearchAgentId: !GetAtt AgentsStack.Outputs.ResearchAgentId
+        ResearchAgentAliasId: !GetAtt AgentsStack.Outputs.ResearchAgentAliasId
+        CritiqueAgentId: !GetAtt AgentsStack.Outputs.CritiqueAgentId
+        CritiqueAgentAliasId: !GetAtt AgentsStack.Outputs.CritiqueAgentAliasId
+        FormatterAgentId: !GetAtt AgentsStack.Outputs.FormatterAgentId
+        FormatterAgentAliasId: !GetAtt AgentsStack.Outputs.FormatterAgentAliasId
+    DependsOn: AgentsStack
+
+Outputs:
+  NotesBucketName:
+    Description: Name of the S3 bucket for notes
+    Value: !GetAtt InfrastructureStack.Outputs.NotesBucketName
+
+  KnowledgeBaseId:
+    Description: ID of the Bedrock Knowledge Base
+    Value: !GetAtt InfrastructureStack.Outputs.KnowledgeBaseId
+
+  DataSourceId:
+    Description: ID of the Data Source
+    Value: !GetAtt InfrastructureStack.Outputs.DataSourceId
+
+  ResearchAgentId:
+    Description: ID of the Research Agent
+    Value: !GetAtt AgentsStack.Outputs.ResearchAgentId
+
+  CritiqueAgentId:
+    Description: ID of the Critique Agent
+    Value: !GetAtt AgentsStack.Outputs.CritiqueAgentId
+
+  FormatterAgentId:
+    Description: ID of the Formatter Agent
+    Value: !GetAtt AgentsStack.Outputs.FormatterAgentId
+
+  ApiEndpoint:
+    Description: HTTP endpoint for the Notes Assistant API
+    Value: !GetAtt ApiStack.Outputs.ApiEndpoint

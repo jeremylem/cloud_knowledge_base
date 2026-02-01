@@ -49,59 +49,7 @@ Query → Research Agent → Critique Agent → Score Check
 
 ## Architecture
 
-```
-                        DEPLOYMENT
-                        ==========
-
-./deploy.sh
-     |
-     v
-+------------------+
-|  S3 Bucket       |  <-- your .md/.txt notes go here
-|  (notes/)        |
-+--------+---------+
-         |
-         v
-+------------------+
-|  Bedrock         |  reads notes, chunks them
-|  Knowledge Base  |  calls Titan Embeddings (1024 dims)
-+--------+---------+
-         |
-         v
-+------------------+
-|  S3 Vectors      |  <-- vectors stored here
-|  Index           |      native similarity search
-+------------------+
-```
-
-```
-                         QUERY FLOW
-                         ==========
-
-python client.py "What is DynamoDB?"
-     |
-     | HTTPS + SigV4 signing
-     v
-+------------------+
-|  API Lambda      |
-|  Function URL    |
-+--------+---------+
-         |
-         v
-+------------------+
-|  Orchestrator    |  manages agent workflow
-|  Lambda          |  extracts citations from trace
-+--------+---------+
-         |
-         +---> Research Agent ---> Critique Agent
-         |           ^                   |
-         |           |     score < 7     |
-         |           +-------------------+
-         |                   |
-         |            score >= 7
-         |                   v
-         +---> Formatter Agent ---> Response with Sources
-```
+![Multi-Agent RAG Architecture](multi-agent_rag_architecture.png)
 
 ### Orchestrator Lambda
 
